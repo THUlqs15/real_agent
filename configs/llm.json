@@ -1,0 +1,8 @@
+{
+  "provider": "openai",
+  "model": "gpt-5.5",
+  "api_key": "${OPENAI_API_KEY}",
+  "temperature": 0.2,
+  "max_output_tokens": 4096,
+  "timeout_seconds": 120
+}

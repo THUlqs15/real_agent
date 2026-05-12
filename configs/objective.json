@@ -1,0 +1,43 @@
+{
+  "baseline_config_id": "fcfs_baseline",
+  "aggregation": "weighted_mean",
+  "rate_weights": {
+    "inf": 0.4,
+    "4": 0.35,
+    "2": 0.25
+  },
+  "metrics": {
+    "duration": {
+      "weight": 0.25,
+      "direction": "lower_better"
+    },
+    "request_throughput": {
+      "weight": 0.2,
+      "direction": "higher_better"
+    },
+    "mean_ttft_ms": {
+      "weight": 0.15,
+      "direction": "lower_better"
+    },
+    "p99_ttft_ms": {
+      "weight": 0.2,
+      "direction": "lower_better"
+    },
+    "mean_tpot_ms": {
+      "weight": 0.1,
+      "direction": "lower_better"
+    },
+    "p99_tpot_ms": {
+      "weight": 0.1,
+      "direction": "lower_better"
+    }
+  },
+  "constraints": {
+    "p99_ttft_ms": {
+      "max_ratio_vs_baseline": 1.1
+    },
+    "p99_tpot_ms": {
+      "max_ratio_vs_baseline": 1.1
+    }
+  }
+}

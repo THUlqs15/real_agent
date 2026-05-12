@@ -1,0 +1,21 @@
+# Runtime outputs
+larry_results/
+server_logs/
+result.md
+
+# Generated LARRY configs
+larry_configs/active.json
+larry_configs/best_config.json
+larry_configs/config_r*_c*.json
+
+# Python/cache artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Notebook/editor artifacts
+.ipynb_checkpoints/
+
+# Local secrets and overrides
+.env
+*.local.json
