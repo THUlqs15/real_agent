@@ -13,7 +13,8 @@ The core loop is:
 main.py
   -> load runtime/objective/LLM config
   -> establish FCFS baseline
-  -> ask GPT for candidate LarryConfig values
+  -> ask GPT for an exploit/explore search plan
+  -> build fixed-role candidate LarryConfig values locally
   -> write each candidate to larry_configs/active.json
   -> run vLLM benchmark CLI
   -> parse metrics
@@ -22,9 +23,12 @@ main.py
   -> update result.md and continue
 ```
 
-GPT does not directly control the scheduler or parse metrics. It only proposes
-candidate configurations and analyzes the measured results. Experiment execution,
-metric parsing, scoring, and file updates are deterministic tools.
+GPT does not directly control the scheduler or parse metrics. For optimization,
+it analyzes the measured results and chooses which parameters to exploit or
+explore next. Local deterministic code converts that search plan into concrete
+candidate configurations, clamps values to the search space, deduplicates
+candidates, and adds a safety anchor. Experiment execution, metric parsing,
+scoring, and file updates are deterministic tools.
 
 ## Directory Layout
 
@@ -57,7 +61,7 @@ metric parsing, scoring, and file updates are deterministic tools.
     main.py            # orchestrator
     common.py          # shared config/path/subprocess helpers
     llm_client.py      # GPT API wrapper
-    optimizer_agent.py # GPT-backed candidate proposer with heuristic fallback
+    optimizer_agent.py # GPT-backed search planner plus local candidate builder
     analyzer_agent.py  # GPT-backed round analyzer with deterministic fallback
     run_one.py         # run one candidate across rates with a unique run_id
     parse_metrics.py   # normalize benchmark JSON into canonical metrics
@@ -151,10 +155,11 @@ The real run expects:
 - LARRY hook patched into vLLM as described in `design_doc_vllm.md`
 - `vllm bench serve` available in the configured vLLM environment
 - a running or launchable vLLM server
-- OpenAI API credentials if GPT-backed proposals are desired
+- OpenAI API credentials if GPT-backed search planning is desired
 
-If GPT is unavailable, the optimizer falls back to deterministic candidate
-generation around the current best configuration.
+If GPT is unavailable, the optimizer falls back to a deterministic search plan
+and still generates the same fixed candidate roles around the current best
+configuration.
 
 ## Execution Workflow
 
@@ -173,7 +178,7 @@ python -m agent.main --dry-run --no-llm --rounds 1 --candidates-per-round 3
 This verifies the external harness only:
 
 - orchestrator
-- candidate generation
+- search-plan and candidate generation
 - `active.json` writes
 - metric parsing
 - scoring
@@ -183,7 +188,7 @@ It does not start vLLM and does not call GPT.
 
 ### 2. Configure GPT access
 
-For GPT-backed proposal and analysis:
+For GPT-backed search planning and analysis:
 
 ```bash
 export OPENAI_API_KEY="your-key"
@@ -201,7 +206,8 @@ To run without GPT, pass:
 --no-llm
 ```
 
-The optimizer will use deterministic fallback candidates.
+The optimizer will use a deterministic fallback search plan, then generate the
+same fixed-role candidates locally.
 
 ### 3. Verify the editable vLLM environment
 
@@ -318,6 +324,19 @@ grep -R "\[LARRY\]" server_logs/
 
 ### 6. Run a small tuning loop
 
+By default, `agent.main` starts a fresh experiment session. Before it writes new
+results, it archives the previous `all_runs.csv`, `agent_notes.md`, `result.md`,
+and raw result JSON files under:
+
+```text
+larry_results/archive/<UTC timestamp>/
+```
+
+It does not archive or delete `larry_configs/best_config.json`; that file is
+kept as the warm-start configuration for the next session. Pass
+`--append-results` only if you intentionally want to keep appending into the
+current `all_runs.csv`.
+
 With the server already running, start with a small no-GPT loop:
 
 ```bash
@@ -397,18 +416,72 @@ saves the final best config.
 ### `agent/llm_client.py`
 
 A small GPT API wrapper using the OpenAI Chat Completions HTTP API. It supports
-JSON-mode responses for candidate generation and plain-text responses for
+JSON-mode responses for optimizer search planning and plain-text responses for
 analysis.
 
 ### `agent/optimizer_agent.py`
 
-Builds the prompt for GPT. Inputs include the search space, objective definition,
-history, and current best candidate. Output is a list of candidate configs:
+Selects the current best configuration, asks GPT for a search plan when enabled,
+and builds concrete candidates locally. GPT does not emit full configs. Its
+required output is a direction plan for the exploit/explore slots:
+
+```json
+{
+  "slots": {
+    "exploit_a": {
+      "directions": {
+        "MIN_QUEUE": "increase",
+        "PRESSURE_AMPLIFIER": "decrease"
+      },
+      "rationale": "Recent p99 TTFT pressure suggests a more conservative local move."
+    },
+    "exploit_b": {
+      "directions": {
+        "CACHE_WEIGHT": "increase"
+      },
+      "rationale": "Improve cache locality without changing queue admission."
+    },
+    "explore_a": {
+      "directions": {
+        "SHORT_PREFILL_BOOST": "toggle"
+      },
+      "rationale": "Test whether short-prefill bias helps this workload."
+    },
+    "explore_b": {
+      "directions": {
+        "MIN_QUEUE": "high",
+        "ALPHA_BASE": "high"
+      },
+      "rationale": "Explore a broader high-batching region."
+    }
+  }
+}
+```
+
+Allowed directions are:
+
+```text
+increase, decrease, toggle, high, low, keep
+```
+
+The local candidate builder then creates the fixed six-role layout:
+
+```text
+c1: current best replay
+c2: exploitation around best A
+c3: exploitation around best B
+c4: exploration A
+c5: exploration B
+c6: safety anchor
+```
+
+The final output consumed by `main.py` is still a list of candidate configs:
 
 ```json
 [
   {
     "config_id": "r2_c1",
+    "slot": "exploit_a",
     "rationale": "Raise MIN_QUEUE to reduce medium-load tail starvation.",
     "config": {
       "ALPHA_BASE": 80000,
@@ -419,6 +492,22 @@ history, and current best candidate. Output is a list of candidate configs:
 ```
 
 The module validates and fills missing LarryConfig fields from
+`config_default.json`, clamps values to `SEARCH_SPACE`, deduplicates candidates,
+and repairs bonus ordering constraints.
+
+Current best selection is run-aware. The optimizer groups history by
+`config_id + run_id`, ignores failed runs, prefers complete multi-rate results
+when available, and excludes any run with a hard constraint violation. This
+prevents old smoke tests or partial single-rate runs from becoming the replay
+candidate by accident.
+
+If `--no-llm` is passed or GPT is unavailable, the same six-role layout is used,
+but the search plan comes from a deterministic fallback based on recent
+constraint violations and latency pressure.
+
+When a fresh session has no candidate history yet, or only contains the automatic
+FCFS/default warmup rows, the optimizer uses `larry_configs/best_config.json` as
+the current-best seed. If that file is missing or invalid, it falls back to
 `config_default.json`.
 
 ### `agent/analyzer_agent.py`

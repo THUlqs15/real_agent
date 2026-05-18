@@ -17,7 +17,7 @@
 再根据结果提出下一轮候选参数。
 ```
 
-整体不是让 LLM 直接控制 vLLM 内部调度，而是让 LLM 负责“提出参数”和“分析实验”。真正执行实验、解析指标、计算 score、写文件，全部由 deterministic Python/shell 工具完成。
+整体不是让 LLM 直接控制 vLLM 内部调度，也不是让 LLM 黑盒生成完整参数。Optimizer 采用两阶段逻辑：LLM 根据历史结果判断下一轮应该 exploit/explore 哪些参数和方向；本地 deterministic Python 代码再把这个 search plan 转成具体候选配置。真正执行实验、解析指标、计算 score、写文件，全部由 deterministic Python/shell 工具完成。
 
 ## 2. 总体 Workflow
 
@@ -36,7 +36,9 @@ agent/main.py
   |-- Round 1..N:
         |
         |-- optimizer_agent.py
-        |     根据历史结果和 objective 生成候选 LARRY configs
+        |     1. 从历史结果选择 current best
+        |     2. 让 GPT 或 fallback 生成 exploit/explore search plan
+        |     3. 本地生成固定角色的候选 LARRY configs
         |
         |-- run_one.py
         |     对每个候选：
@@ -159,17 +161,135 @@ agent/optimizer_agent.py
 - 读取历史结果 `all_runs.csv`
 - 读取 `objective.json`
 - 读取默认 LARRY config
+- 选择当前最好的有效 run 作为 `current best`
 - 根据搜索空间生成下一轮候选参数
 
 它有两种模式：
 
 ```text
 LLM 模式：
-  调 GPT，让模型根据历史结果生成候选配置。
+  调 GPT，让模型根据历史结果生成 search plan。
+  GPT 只决定 exploit/explore 哪些参数以及方向，不直接输出完整配置。
 
 fallback 模式：
-  当 --no-llm 或 GPT 不可用时，用 deterministic heuristic 生成候选。
+  当 --no-llm 或 GPT 不可用时，用 deterministic fallback 生成 search plan。
+  后续仍由本地代码生成相同结构的候选。
 ```
+
+### 4.2.1 Current Best 选择规则
+
+Optimizer 不会简单地从 `all_runs.csv` 里拿单行最高分作为 best。原因是历史结果里可能混有：
+
+- dry-run 结果
+- smoke test 单 rate 结果
+- 失败 run
+- 同一个 `config_id` 的多次重复运行
+- 违反 hard constraint 的候选
+
+当前实现会按 `config_id + run_id` 分组。如果旧 CSV 里没有显式 `run_id`，会用 `round_id` 里的时间戳 run id 兜底。
+
+选择规则是：
+
+```text
+1. 跳过 fcfs_baseline
+2. 跳过 success=false 的 run
+3. 如果存在完整多 rate run，优先只在多 rate run 中比较
+4. 如果一个 run 的任意 rate 违反 constraint，则整个 run 不作为 best
+5. 用 composite_score 选择当前 best
+6. 如果 CSV 里的 config_json 因旧 header 错位不可解析，则回退读取 larry_configs/config_<config_id>.json
+```
+
+这样 `c1: current best replay` 会 replay 一个真实可比、没有违反约束的配置，而不是被早期 smoke test 的单点高分误导。
+
+### 4.2.2 LLM Search Plan
+
+LLM 输入包括：
+
+- `SEARCH_SPACE`
+- `objective.json`
+- `current_best_config`
+- 最近历史结果 summary
+- 每个候选 slot 的固定含义
+
+LLM 输出不是完整 LARRY config，而是如下 search plan：
+
+```json
+{
+  "slots": {
+    "exploit_a": {
+      "directions": {
+        "MIN_QUEUE": "increase",
+        "PRESSURE_AMPLIFIER": "decrease"
+      },
+      "rationale": "根据最近 p99 TTFT 压力做更保守的局部搜索"
+    },
+    "exploit_b": {
+      "directions": {
+        "CACHE_WEIGHT": "increase"
+      },
+      "rationale": "增强 cache locality，但不改变 admission pressure"
+    },
+    "explore_a": {
+      "directions": {
+        "SHORT_PREFILL_BOOST": "toggle"
+      },
+      "rationale": "测试 short prefill bias 是否有收益"
+    },
+    "explore_b": {
+      "directions": {
+        "MIN_QUEUE": "high",
+        "ALPHA_BASE": "high"
+      },
+      "rationale": "探索更激进的 high batching 区域"
+    }
+  }
+}
+```
+
+允许的 direction：
+
+```text
+increase
+decrease
+toggle
+high
+low
+keep
+```
+
+`_sanitize_plan()` 会过滤非法参数名和非法 direction，所以即使 GPT 输出不干净，也不会直接进入候选配置。
+
+### 4.2.3 每轮 6 个固定候选角色
+
+本地代码将 search plan 转成固定 6 个候选：
+
+```text
+c1: current best replay
+c2: exploitation around best A
+c3: exploitation around best B
+c4: exploration A
+c5: exploration B
+c6: safety anchor
+```
+
+含义：
+
+- `c1`：完全 replay 当前 best，用于检测 run-to-run variance。
+- `c2/c3`：围绕 best 做小步 exploitation，例如 `increase` 会乘以较小倍率。
+- `c4/c5`：做更大步 exploration，例如 `high/low/toggle` 会移动到搜索空间的更远区域。
+- `c6`：保守 safety anchor，倾向 `MIN_QUEUE=32`、较低 `PRESSURE_AMPLIFIER`、关闭 `SHORT_PREFILL_BOOST`，用于防止整轮候选都太激进。
+
+注意：不是固定只调三四个参数。GPT 可以从 `SEARCH_SPACE` 中选择任意合法参数，但 prompt 会建议优先关注：
+
+```text
+MIN_QUEUE
+ALPHA_BASE
+PRESSURE_AMPLIFIER
+CACHE_WEIGHT
+SHORT_PREFILL_*
+```
+
+因为这些参数对当前 single-turn serving benchmark 更直接。`SESSION_PROGRESS_WEIGHT`、`CONTINUITY_BONUS`、`ADAPTIVE_*` 等 session-aware 参数不是禁止调，而是只有当历史结果或数据预处理显示 multi-turn/session-aware 明显相关时，才更值得打开。
 
 搜索空间在 `SEARCH_SPACE` 中定义，例如：
 
@@ -186,6 +306,7 @@ SHORT_PREFILL_BOOST: [0, 500000]
 ```json
 {
   "config_id": "r1_c1",
+  "slot": "exploit_a",
   "rationale": "why this config is proposed",
   "config": {
     "ALPHA_BASE": 60000,
@@ -201,6 +322,13 @@ SHORT_PREFILL_BOOST: [0, 500000]
 - 将参数限制在搜索范围内
 - 修正 `ADAPTIVE_MIN_BONUS < ADAPTIVE_BASE_BONUS <= ADAPTIVE_MAX_BONUS`
 - 修正非法 `CONTINUITY_DECAY`
+
+`_apply_plan()` 会根据 direction 和 slot 类型决定步长：
+
+- exploitation：小步调整，主要围绕 best 做局部搜索
+- exploration：大步调整，允许跳到更远区域
+
+`_structured_candidates()` 会做 dedupe。如果两个 slot 生成了完全相同的 config，会轻微扰动 `ALPHA_BASE`，避免浪费一次 benchmark。
 
 ### 4.3 Executor / Experiment Runner
 
@@ -445,6 +573,17 @@ python -m agent.main --dry-run --no-llm --rounds 1 --candidates-per-round 3
 python -m agent.main --rounds 10 --candidates-per-round 6
 ```
 
+默认行为：
+
+```text
+每次运行 agent.main 都会开启一个新的 experiment session。
+旧的 all_runs.csv、agent_notes.md、result.md 和 raw result JSON 会被归档到：
+
+larry_results/archive/<UTC timestamp>/
+
+larry_configs/best_config.json 会保留，用作本次 session 的 warm-start/current-best seed。
+```
+
 参数：
 
 ```text
@@ -458,10 +597,13 @@ python -m agent.main --rounds 10 --candidates-per-round 6
   不跑真实 vLLM benchmark，生成 synthetic metrics。
 
 --no-llm
-  不调用 GPT，使用 heuristic fallback。
+  不调用 GPT，使用 deterministic fallback search plan。
 
 --skip-baseline
   跳过自动跑 fcfs_baseline。
+
+--append-results
+  不归档旧结果，继续向当前 all_runs.csv 追加。只有需要跨 session 混合分析时才建议使用。
 ```
 
 ### `agent/run_one.py`
@@ -491,15 +633,27 @@ python -m agent.run_one \
 
 ### `agent/optimizer_agent.py`
 
-候选参数生成器。优先用 GPT；失败时用 heuristic。
+候选参数生成器。优先用 GPT 生成 search plan；失败时用 deterministic fallback plan。
 
-heuristic 初始重点探索：
+它不是让 GPT 直接黑盒输出完整 config，而是：
 
 ```text
-MIN_QUEUE
-ALPHA_BASE
-PRESSURE_AMPLIFIER
-SHORT_PREFILL_BOOST
+1. 读取 all_runs.csv
+2. 按 config_id + run_id 选择 current best
+3. 让 GPT 判断 exploit/explore 哪些参数以及方向
+4. 本地生成 c1..c6 固定角色候选
+5. clamp / dedupe / 修正 bonus 约束
+```
+
+固定角色：
+
+```text
+c1 best_replay
+c2 exploit_a
+c3 exploit_b
+c4 explore_a
+c5 explore_b
+c6 safety_anchor
 ```
 
 ### `agent/analyzer_agent.py`

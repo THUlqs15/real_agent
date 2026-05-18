@@ -18,6 +18,15 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _history_group_key(row: dict[str, Any]) -> str:
+    cid = row.get("config_id", "")
+    run_id = row.get("run_id", "")
+    shifted_round_id = row.get("round_id", "")
+    if not run_id and isinstance(shifted_round_id, str) and shifted_round_id.startswith("20") and "_" in shifted_round_id:
+        run_id = shifted_round_id
+    return f"{cid}:{run_id or shifted_round_id}"
+
+
 def score_row(cur: dict[str, Any], base: dict[str, Any], objective: dict[str, Any]) -> tuple[float, bool, str]:
     score = 0.0
     violations: list[str] = []
@@ -49,7 +58,7 @@ def score_rows(rows: list[dict[str, Any]], objective: dict[str, Any]) -> list[di
     baseline_id = objective["baseline_config_id"]
     baselines = {r["rate"]: r for r in rows if r.get("config_id") == baseline_id}
     updated: list[dict[str, Any]] = []
-    by_config: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_run: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     for row in rows:
         row = dict(row)
@@ -64,11 +73,11 @@ def score_rows(rows: list[dict[str, Any]], objective: dict[str, Any]) -> list[di
             row["violation_reason"] = reason
         updated.append(row)
         if row.get("config_id"):
-            by_config[row["config_id"]].append(row)
+            by_run[_history_group_key(row)].append(row)
 
     rate_weights = objective.get("rate_weights", {})
     composites: dict[str, float] = {}
-    for cid, cfg_rows in by_config.items():
+    for group_key, cfg_rows in by_run.items():
         weighted_sum = 0.0
         total_weight = 0.0
         for row in cfg_rows:
@@ -79,12 +88,12 @@ def score_rows(rows: list[dict[str, Any]], objective: dict[str, Any]) -> list[di
             weighted_sum += score * weight
             total_weight += weight
         if total_weight > 0:
-            composites[cid] = weighted_sum / total_weight
+            composites[group_key] = weighted_sum / total_weight
 
     for row in updated:
-        cid = row.get("config_id")
-        if cid in composites:
-            row["composite_score"] = f"{composites[cid]:.8f}"
+        group_key = _history_group_key(row)
+        if group_key in composites:
+            row["composite_score"] = f"{composites[group_key]:.8f}"
     return updated
 
 

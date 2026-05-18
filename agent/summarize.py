@@ -10,10 +10,21 @@ def summarize(results_csv: Path, out_path: Path, notes_path: Path | None = None)
     runtime = load_runtime()
     rows = read_csv(results_csv)
     baselines = [r for r in rows if r.get("config_id") == "fcfs_baseline"]
+
+    def rank_key(row: dict[str, str]) -> tuple[bool, float]:
+        violated = row.get("constraint_violation", "").lower() == "true"
+        try:
+            score = float(row.get("composite_score") or row.get("score") or "-999")
+        except ValueError:
+            score = -999.0
+        return (violated, -score)
+
     ranked = sorted(
-        [r for r in rows if r.get("config_id") != "fcfs_baseline"],
-        key=lambda r: float(r.get("composite_score") or r.get("score") or "-999"),
-        reverse=True,
+        [
+            r for r in rows
+            if r.get("config_id") != "fcfs_baseline" and r.get("success", "").lower() in ("true", "1")
+        ],
+        key=rank_key,
     )
     lines = [
         "# LARRYSmith Real-vLLM Optimization Results",

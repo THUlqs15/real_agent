@@ -82,12 +82,15 @@ def append_csv(path: Path, row: dict[str, Any]) -> None:
     existing = read_csv(path)
     fieldnames = list(row.keys())
     if existing:
-        for key in existing[0].keys():
-            if key not in fieldnames:
-                fieldnames.append(key)
-        for key in row.keys():
-            if key not in fieldnames:
-                fieldnames.append(key)
+        existing_fields = list(existing[0].keys())
+        extra_fields = [key for key in row.keys() if key not in existing_fields]
+        if extra_fields:
+            fieldnames = existing_fields + extra_fields
+            rows = [dict(r) for r in existing]
+            rows.append(row)
+            rewrite_csv(path, rows)
+            return
+        fieldnames = existing_fields
     write_header = not path.exists()
     with path.open("a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
