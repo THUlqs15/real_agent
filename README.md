@@ -296,7 +296,7 @@ This will:
 - wait briefly for hot reload
 - run `vllm bench serve`
 - write raw benchmark JSON under `larry_results/`
-- append normalized rows to `larry_results/all_runs.csv`
+- write normalized rows into the current session's `larry_results/all_runs.csv`
 - compute score fields using `configs/objective.json`
 
 Each invocation gets a unique `run_id`, for example:
@@ -524,7 +524,7 @@ Runs one candidate across one or more request rates:
 3. Invokes `vllm bench serve`.
 4. Saves raw benchmark JSON under a unique `run_id`.
 5. Normalizes metrics.
-6. Appends rows to `larry_results/all_runs.csv`.
+6. Records rows in the current session's `larry_results/all_runs.csv`.
 
 The generated `run_id` has this shape:
 

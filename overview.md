@@ -17,7 +17,7 @@
 再根据结果提出下一轮候选参数。
 ```
 
-Optimizer 采用两阶段逻辑：LLM 根据历史结果判断下一轮应该 exploit/explore 哪些参数和方向；本地 Python 代码再把这个 search plan 转成具体候选配置。真正执行实验、解析指标、计算 score、写文件，全部由 Python/shell 工具完成。
+整体不是让 LLM 直接控制 vLLM 内部调度，也不是让 LLM 黑盒生成完整参数。Optimizer 采用两阶段逻辑：LLM 根据历史结果判断下一轮应该 exploit/explore 哪些参数和方向；本地 Python 代码再把这个 search plan 转成具体候选配置。真正执行实验、解析指标、计算 score、写文件，全部由 Python/shell 工具完成。
 
 ## 2. 总体 Workflow
 
@@ -38,7 +38,7 @@ agent/main.py
         |-- optimizer_agent.py
         |     1. 从历史结果选择 current best
         |     2. 让 GPT 或 fallback 生成 exploit/explore search plan
-        |     3. 本地生成一组候选 LARRY configs
+        |     3. 本地生成固定角色的候选 LARRY configs
         |
         |-- run_one.py
         |     对每个候选：
@@ -47,7 +47,7 @@ agent/main.py
         |       3. 调用 vllm bench serve
         |       4. 保存 raw benchmark JSON
         |       5. 解析 metrics
-        |       6. 追加 all_runs.csv
+        |       6. 写入本次 session 的 all_runs.csv
         |       7. 计算 score
         |
         |-- analyzer_agent.py
@@ -345,7 +345,7 @@ agent/run_one.py
 - 调用 `vllm bench serve`
 - 保存 raw benchmark JSON
 - 调用 `parse_metrics.py`
-- 追加 `all_runs.csv`
+- 写入本次 session 的 `all_runs.csv`
 - 调用 `score.py`
 
 核心步骤：
@@ -507,7 +507,8 @@ agent/summarize.py
 
 ```text
 result.md 是生成文件，会被 summarize.py 覆盖。
-真实历史记录主要在 larry_results/all_runs.csv。
+当前 session 的结构化结果在 larry_results/all_runs.csv。
+旧 session 会在下一次 agent.main 启动时归档到 larry_results/archive/<UTC timestamp>/。
 ```
 
 ### 4.8 LLM Client
@@ -603,7 +604,7 @@ larry_configs/best_config.json 会保留，用作本次 session 的 warm-start/c
   跳过自动跑 fcfs_baseline。
 
 --append-results
-  不归档旧结果，继续向当前 all_runs.csv 追加。只有需要跨 session 混合分析时才建议使用。
+  不归档旧结果，继续使用当前 all_runs.csv。只有需要跨 session 混合分析时才建议使用。
 ```
 
 ### `agent/run_one.py`
@@ -638,11 +639,12 @@ python -m agent.run_one \
 它不是让 GPT 直接黑盒输出完整 config，而是：
 
 ```text
-1. 读取 all_runs.csv
-2. 按 config_id + run_id 选择 current best
-3. 让 GPT 判断 exploit/explore 哪些参数以及方向
-4. 本地生成 c1..c6 固定角色候选
-5. clamp / dedupe / 修正 bonus 约束
+1. 读取本次 session 的 all_runs.csv
+2. 如果本次 session 还没有有效候选历史，则加载 larry_configs/best_config.json 作为 current best seed
+3. 如果本次 session 已经有有效候选，则按 config_id + run_id 选择本次 session 内的 current best
+4. 让 GPT 判断 exploit/explore 哪些参数以及方向
+5. 本地生成 c1..c6 固定角色候选
+6. clamp / dedupe / 修正 bonus 约束
 ```
 
 固定角色：
@@ -979,7 +981,10 @@ if q_len <= cfg.MIN_QUEUE:
 
 ### `larry_results/all_runs.csv`
 
-所有实验的主结果表。
+当前 experiment session 的主结果表。每次运行 `agent.main` 时，旧的 `all_runs.csv`
+会先被归档；新的 `all_runs.csv` 只记录本次 session 的 baseline、default 和候选结果。
+跨 session 的 warm-start 由 `larry_configs/best_config.json` 提供，而不是从旧
+`all_runs.csv` 继续读。
 
 典型字段：
 
