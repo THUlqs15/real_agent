@@ -43,7 +43,7 @@ agent/main.py
         |-- run_one.py
         |     对每个候选：
         |       1. 写入 larry_configs/active.json
-        |       2. 等待 vLLM LARRY hook 热加载
+        |       2. 等待 vLLM LARRY hook 加载
         |       3. 调用 vllm bench serve
         |       4. 保存 raw benchmark JSON
         |       5. 解析 metrics
