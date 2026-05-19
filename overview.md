@@ -63,9 +63,9 @@ vLLM server 不需要每轮重启。`run_one.py` 每次只改：
 larry_configs/active.json
 ```
 
-vLLM 内部的 LARRY hook 会定期检查这个文件，并热加载新参数。
+vLLM 内部的 LARRY hook 会定期检查这个文件，并加载新参数。
 
-## 3. Long-lived Server 与热切换机制
+## 3. Long-lived Server 与切换机制
 
 `agent/start_server.sh` 启动 vLLM server 时会设置：
 
