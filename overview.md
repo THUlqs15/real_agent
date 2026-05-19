@@ -88,7 +88,7 @@ LARRY_RELOAD_EVERY_STEPS=20
   每 20 次 scheduler 调度检查一次 active.json 是否变化。
 ```
 
-热切换过程：
+切换过程：
 
 ```text
 run_one.py 写 active.json
@@ -110,7 +110,7 @@ LarryRuntime.maybe_reload()
 - 修改了 server 启动参数，例如 model、`max_num_seqs`、`max_num_batched_tokens`
 - 修改了 `VLLM_USE_LARRY`、`LARRY_CONFIG_PATH` 等启动环境变量
 - server 崩溃、hang、OOM
-- 要测试真正 `VLLM_USE_LARRY=0` 的 stock vLLM
+- 要测试真正 `VLLM_USE_LARRY=0` 的 original vLLM
 
 ## 4. 子 Agent 分工
 
