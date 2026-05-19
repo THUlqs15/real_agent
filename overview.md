@@ -17,7 +17,7 @@
 再根据结果提出下一轮候选参数。
 ```
 
-整体不是让 LLM 直接控制 vLLM 内部调度，也不是让 LLM 黑盒生成完整参数。Optimizer 采用两阶段逻辑：LLM 根据历史结果判断下一轮应该 exploit/explore 哪些参数和方向；本地 deterministic Python 代码再把这个 search plan 转成具体候选配置。真正执行实验、解析指标、计算 score、写文件，全部由 deterministic Python/shell 工具完成。
+Optimizer 采用两阶段逻辑：LLM 根据历史结果判断下一轮应该 exploit/explore 哪些参数和方向；本地 Python 代码再把这个 search plan 转成具体候选配置。真正执行实验、解析指标、计算 score、写文件，全部由 Python/shell 工具完成。
 
 ## 2. 总体 Workflow
 
