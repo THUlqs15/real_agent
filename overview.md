@@ -1,4 +1,4 @@
-# LARRYSmith Agentic 调参系统总览
+# LARRYSmith Agentic 调参系统
 
 本文档解释当前 `real_agent` 项目的整体 workflow、子 agent 分工、核心代码文件逻辑，以及主要配置文件。系统目标是自动化调参 vLLM 中的 LARRY v6 调度算法。
 
