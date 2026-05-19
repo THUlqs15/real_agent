@@ -508,7 +508,7 @@ agent/summarize.py
 ```text
 result.md 是生成文件，会被 summarize.py 覆盖。
 当前 session 的结构化结果在 larry_results/all_runs.csv。
-旧 session 会在下一次 agent.main 启动时归档到 larry_results/archive/<UTC timestamp>/。
+下一次 agent.main 启动时会删除旧结果；跨运行状态只保留在 larry_configs/best_config.json。
 ```
 
 ### 4.8 LLM Client
@@ -578,11 +578,9 @@ python -m agent.main --rounds 10 --candidates-per-round 6
 
 ```text
 每次运行 agent.main 都会开启一个新的 experiment session。
-旧的 all_runs.csv、agent_notes.md、result.md 和 raw result JSON 会被归档到：
-
-larry_results/archive/<UTC timestamp>/
-
+启动时会删除旧的 all_runs.csv、agent_notes.md、result.md 和 raw result JSON。
 larry_configs/best_config.json 会保留，用作本次 session 的 warm-start/current-best seed。
+跨运行只通过 best_config.json 传递状态，不再读取旧 all_runs.csv。
 ```
 
 参数：
@@ -602,9 +600,6 @@ larry_configs/best_config.json 会保留，用作本次 session 的 warm-start/c
 
 --skip-baseline
   跳过自动跑 fcfs_baseline。
-
---append-results
-  不归档旧结果，继续使用当前 all_runs.csv。只有需要跨 session 混合分析时才建议使用。
 ```
 
 ### `agent/run_one.py`
@@ -982,7 +977,7 @@ if q_len <= cfg.MIN_QUEUE:
 ### `larry_results/all_runs.csv`
 
 当前 experiment session 的主结果表。每次运行 `agent.main` 时，旧的 `all_runs.csv`
-会先被归档；新的 `all_runs.csv` 只记录本次 session 的 baseline、default 和候选结果。
+会先被删除；新的 `all_runs.csv` 只记录本次 session 的 baseline、default 和候选结果。
 跨 session 的 warm-start 由 `larry_configs/best_config.json` 提供，而不是从旧
 `all_runs.csv` 继续读。
 
