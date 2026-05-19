@@ -38,7 +38,7 @@ agent/main.py
         |-- optimizer_agent.py
         |     1. 从历史结果选择 current best
         |     2. 让 GPT 或 fallback 生成 exploit/explore search plan
-        |     3. 本地生成固定角色的候选 LARRY configs
+        |     3. 本地生成一组候选 LARRY configs
         |
         |-- run_one.py
         |     对每个候选：
